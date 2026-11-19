@@ -5,6 +5,8 @@ import json
 import logging
 import math
 import os
+import re
+from urllib.parse import urlsplit
 from pathlib import Path
 import unicodedata
 
@@ -22,6 +24,10 @@ from traffic_data import database_url, make_engine, validate_flow
 INCIDENT_URL = "https://api.tomtom.com/traffic/services/5/incidentDetails"
 FIELDS = "{incidents{type,geometry{type,coordinates},properties{id,iconCategory,events{description},startTime,endTime,from,to,length,delay,roadNumbers}}}"
 logger = logging.getLogger("atlas.roads")
+
+
+class MissingInventory(ValueError):
+    pass
 
 
 def inventory_records(payload, city):
@@ -50,13 +56,27 @@ def inventory_records(payload, city):
 
 
 def overpass(query):
-    response = requests.get("https://overpass-api.de/api/interpreter", params={"data": query},
-        headers={"User-Agent": "AtlasTrafficResearch/1.0"}, timeout=(10, 150))
-    response.raise_for_status()
-    payload = response.json()
-    if payload.get("remark") or not isinstance(payload.get("elements"), list):
-        raise ValueError("Incomplete Overpass response; previous inventory preserved")
-    return payload
+    endpoints = [x.strip() for x in os.getenv("OVERPASS_URLS", "https://overpass-api.de/api/interpreter,https://overpass.kumi.systems/api/interpreter").split(",") if x.strip()]
+    timeout = int(os.getenv("OVERPASS_READ_TIMEOUT", "45"))
+    if not endpoints or not 10 <= timeout <= 180:
+        raise ValueError("Configure OVERPASS_URLS and OVERPASS_READ_TIMEOUT between 10 and 180 seconds")
+    query = re.sub(r"\[timeout:\d+\]", f"[timeout:{timeout - 5}]", query)
+    for index, endpoint in enumerate(endpoints, 1):
+        if urlsplit(endpoint).scheme != "https":
+            raise ValueError("OVERPASS_URLS must contain HTTPS endpoints")
+        logger.info("OSM request %s/%s to %s (connect timeout 5s, read timeout %ss)", index, len(endpoints), urlsplit(endpoint).hostname, timeout)
+        try:
+            response = requests.get(endpoint, params={"data": query},
+                headers={"User-Agent": "AtlasTrafficResearch/1.0"}, timeout=(5, timeout))
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict) or payload.get("remark") or not isinstance(payload.get("elements"), list):
+                raise ValueError("Incomplete OSM response")
+            logger.info("OSM response received: %s elements", len(payload["elements"]))
+            return payload
+        except (requests.RequestException, ValueError) as exc:
+            logger.warning("OSM request failed (%s); %s", type(exc).__name__, "trying fallback server" if index < len(endpoints) else "no servers left")
+    raise ValueError("OSM servers unavailable. Existing inventory is unchanged. Retry later or import a local file with --network-file; configure OVERPASS_URLS to use your own server.")
 
 
 def normalized_name(name):
@@ -164,7 +184,7 @@ def collect_city(engine, city, limit, key, avenue=None, corridor=None):
     with engine.connect() as conn:
         area = conn.execute(select(areas).where(areas.c.city == city)).mappings().first()
         if not area:
-            raise ValueError(f"Import the road network for {city} first")
+            raise MissingInventory(f'No road inventory for {city}. Run: uv run --env-file .env python road_ingest.py import --city "{city}"')
         query = select(segments).where(segments.c.city == city, segments.c.active.is_(True))
         if avenue:
             query = query.where(segments.c.name == avenue)
@@ -262,6 +282,15 @@ def main(argv=None):
             finally:
                 if locked:
                     lock.execute(text("SELECT pg_advisory_unlock(684219038)"))
+    except MissingInventory as exc:
+        logger.error("%s", exc)
+        return 2
+    except (requests.RequestException, ValueError) as exc:
+        logger.error("%s", exc)
+        return 1
+    except KeyboardInterrupt:
+        logger.info("Cancelled. Previously stored observations and inventories are preserved.")
+        return 130
     finally:
         engine.dispose()
 
