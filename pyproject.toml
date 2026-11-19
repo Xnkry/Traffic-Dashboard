@@ -1,19 +1,18 @@
 [project]
 name = "trafficapp"
 version = "0.1.0"
-description = "Add your description here"
+description = "Morocco traffic observatory with a 3D Streamlit dashboard and validated ingestion pipeline"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-    "folium>=0.20.0",
+    "altair>=6.0.0",
     "numpy>=2.5.3",
     "pandas>=3.0.5",
-    "plotly>=7.1.0",
+    "pydeck>=0.9.1",
     "psycopg2-binary>=2.9.13",
     "requests>=2.34.2",
     "sqlalchemy>=2.0.53",
     "streamlit>=1.64.0",
-    "streamlit-folium>=0.27.4",
 ]
 
 [project.scripts]

@@ -11,3 +11,11 @@ wheels/
 Constants.py
 .agents/skills/developing-with-streamlit
 .claude/skills/developing-with-streamlit
+venv/
+.env
+.streamlit/secrets.toml
+data/*.db
+data/*.db-*
+data/*.sql
+.pytest_cache/
+.ruff_cache/

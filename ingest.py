@@ -1,116 +1,105 @@
-"""
-ingest.py
-
-Fetches live traffic data for each monitored Casablanca location,
-flattens the response, and prints the resulting DataFrame.
-
-No database involved yet — that's the next step once this prints
-a clean table correctly.
-
-Run with:
-    python ingest.py
-"""
-
+import argparse
+import logging
+import os
+import uuid
 from datetime import datetime, timezone
 
-import pandas as pd
 import requests
-from sqlalchemy import create_engine
+from requests.adapters import HTTPAdapter
+from sqlalchemy import select
+from urllib3.util.retry import Retry
 
-from Constants import TOMTOM_API  # your key, kept out of git via .gitignore
+from city_catalog import catalog
+from traffic_data import (
+    batches, cities, database_url, demo_data, initialize_database,
+    insert_ignore, locations, make_engine, readings, validate_flow,
+)
 
-API_KEY = TOMTOM_API
-
-DATABASE_URL = "postgresql://traffic_user:traffic_pass@localhost:5432/traffic_db"
-engine = create_engine(DATABASE_URL)
 
 URL = "https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json"
-
-LOCATIONS = [
-    {"name": "Centre Ville", "lat": 33.5731, "lon": -7.5898},
-    {"name": "Ain Diab", "lat": 33.5928, "lon": -7.6511},
-    {"name": "Sidi Bernoussi", "lat": 33.6086, "lon": -7.5013},
-]
+logger = logging.getLogger("trafficapp.ingest")
 
 
-def fetch_traffic(lat: float, lon: float) -> dict | None:
-    """Call the TomTom API for one point. Returns the flowSegmentData dict, or None on failure."""
-    params = {"point": f"{lat},{lon}", "key": API_KEY}
+def api_session():
+    session = requests.Session()
+    retry = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504],
+                  allowed_methods=["GET"], respect_retry_after_header=True)
+    session.mount("https://", HTTPAdapter(max_retries=retry))
+    return session
+
+
+def fetch_traffic(session, api_key, lat, lon):
     try:
-        resp = requests.get(URL, params=params, timeout=10)
-        resp.raise_for_status()
-        return resp.json()["flowSegmentData"]
-    except requests.exceptions.RequestException as e:
-        print(f"  [FAILED] {lat},{lon} -> {e}")
+        response = session.get(URL, params={"point": f"{lat},{lon}", "key": api_key, "unit": "KMPH"}, timeout=(5, 20))
+        response.raise_for_status()
+        payload = response.json()["flowSegmentData"]
+        return {**validate_flow(payload), "raw_payload": payload}
+    except (requests.RequestException, ValueError, KeyError, TypeError):
+        logger.warning("No valid reading at %.4f, %.4f", lat, lon)
         return None
 
 
-def collect_all_locations() -> pd.DataFrame:
-    """Loop over every location, flatten each response into a row."""
-    rows = []
-    timestamp = datetime.now(timezone.utc)
-
-    for loc in LOCATIONS:
-        print(f"Fetching: {loc['name']} ({loc['lat']}, {loc['lon']})...")
-        flow = fetch_traffic(loc["lat"], loc["lon"])
-
-        if flow is None:
-            continue
-
-        current_speed = flow["currentSpeed"]
-        free_flow_speed = flow["freeFlowSpeed"]
-
-        rows.append(
-            {
-                "timestamp": timestamp,
-                "location": loc["name"],
-                "lat": loc["lat"],
-                "lon": loc["lon"],
-                "current_speed": current_speed,
-                "free_flow_speed": free_flow_speed,
-                "congestion_ratio": round(current_speed / free_flow_speed, 3),
-            }
-        )
-
-    return pd.DataFrame(rows)
+def save_batch(engine, records, run_id, started_at, source, requested, failed):
+    with engine.begin() as connection:
+        connection.execute(batches.insert().values(id=run_id, started_at=started_at,
+            finished_at=datetime.now(timezone.utc), source=source,
+            requested=requested, succeeded=len(records), failed=failed))
+        lookup = {(row.city, row.name): row.id for row in connection.execute(
+            select(locations.c.id, cities.c.name.label("city"), locations.c.name)
+            .select_from(locations.join(cities)))}
+        inserted = 0
+        for record in records:
+            value = {key: record[key] for key in (
+                "recorded_at", "current_speed", "free_flow_speed", "congestion_ratio",
+                "confidence", "road_closure")}
+            value.update(location_id=lookup[(record["city"], record["location"])],
+                source=source, run_id=run_id, raw_payload=record.get("raw_payload"))
+            result = insert_ignore(connection, readings, value, ["location_id", "recorded_at", "source"])
+            inserted += result.rowcount
+    return inserted
 
 
-def save_to_db(df: pd.DataFrame) -> None:
-    """Insert collected rows into traffic_readings, matching each location to its ID."""
-    # Get the location_id for each location name from the locations table
-    locations_df = pd.read_sql("SELECT id, name FROM locations", engine)
-    name_to_id = dict(zip(locations_df["name"], locations_df["id"]))
-
-    df = df.copy()
-    df["location_id"] = df["location"].map(name_to_id)
-
-    if df["location_id"].isna().any():
-        missing = df[df["location_id"].isna()]["location"].unique()
-        print(f"  [WARNING] No matching location_id for: {missing}")
-        df = df.dropna(subset=["location_id"])
-
-    insert_df = df.rename(columns={"timestamp": "recorded_at"})[
-        [
-            "location_id",
-            "recorded_at",
-            "current_speed",
-            "free_flow_speed",
-            "congestion_ratio",
-        ]
-    ]
-
-    insert_df.to_sql("traffic_readings", engine, if_exists="append", index=False)
-    print(f"  Inserted {len(insert_df)} row(s) into traffic_readings.")
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Collect and validate Morocco traffic observations")
+    parser.add_argument("--init-db", action="store_true", help="Create or migrate schema and seed monitoring points")
+    parser.add_argument("--demo", action="store_true", help="Load seven days of explicitly labeled synthetic observations")
+    parser.add_argument("--cities", nargs="+", choices=sorted(catalog().city.unique()))
+    args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    engine = make_engine(database_url())
+    if args.init_db or args.demo:
+        initialize_database(engine)
+    if args.init_db and not args.demo:
+        logger.info("Schema ready: 12 cities and 36 monitoring points")
+        return 0
+    started_at = datetime.now(timezone.utc)
+    run_id = str(uuid.uuid4())
+    if args.demo:
+        frame = demo_data(started_at)
+        if args.cities:
+            frame = frame[frame.city.isin(args.cities)]
+        records = frame.to_dict("records")
+        count = save_batch(engine, records, run_id, started_at, "demo", len(records), 0)
+        logger.info("Stored %s synthetic observations", count)
+        return 0
+    api_key = os.getenv("TOMTOM_API_KEY")
+    if not api_key:
+        logger.error("Set TOMTOM_API_KEY before collecting live data")
+        return 2
+    points = catalog()
+    if args.cities:
+        points = points[points.city.isin(args.cities)]
+    records = []
+    with api_session() as session:
+        for point in points.to_dict("records"):
+            flow = fetch_traffic(session, api_key, point["lat"], point["lon"])
+            if flow is not None:
+                records.append({**point, **flow, "recorded_at": datetime.now(timezone.utc)})
+    failed = len(points) - len(records)
+    count = save_batch(engine, records, run_id, started_at, "tomtom", len(points), failed)
+    logger.info("Stored %s observations; %s of %s points failed", count, failed, len(points))
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
-    df = collect_all_locations()
-
-    print("\n--- Result ---")
-    if df.empty:
-        print("No data collected — check your API key or network connection.")
-    else:
-        print(df.to_string(index=False))
-        print(f"\n{len(df)} location(s) collected successfully.")
-
-        save_to_db(df)
+    raise SystemExit(main())

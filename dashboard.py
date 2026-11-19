@@ -1,127 +1,206 @@
-"""
-dashboard.py
+import os
+from datetime import datetime, timezone
 
-Streamlit dashboard for the Casablanca Traffic Project.
-Reads data from PostgreSQL (populated by ingest.py) and displays:
-- A KPI for current congestion
-- An interactive line chart of congestion over time
-- A map of monitored locations colored by current congestion
-
-Run with:
-    streamlit run dashboard.py
-"""
-
-import folium
+import altair as alt
 import pandas as pd
-import plotly.express as px
 import streamlit as st
-from sqlalchemy import create_engine
-from streamlit_folium import st_folium
+from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
-# --- Setup ---
-st.set_page_config(page_title="Casablanca Traffic Dashboard", layout="wide")
-
-DATABASE_URL = "postgresql://traffic_user:traffic_pass@localhost:5432/traffic_db"
-engine = create_engine(DATABASE_URL)
+from city_catalog import catalog
+from traffic_data import batches, database_url, demo_data, load_readings, make_engine, snapshot
+from traffic_views import traffic_map, trend_chart, city_chart, observation_table
 
 
-@st.cache_data(ttl=300)  # refresh cached data every 5 minutes
-def load_data() -> pd.DataFrame:
-    query = """
-        SELECT
-            l.name AS location,
-            l.lat,
-            l.lon,
-            r.recorded_at,
-            r.current_speed,
-            r.free_flow_speed,
-            r.congestion_ratio
-        FROM traffic_readings r
-        JOIN locations l ON l.id = r.location_id
-        ORDER BY r.recorded_at ASC
-    """
-    df = pd.read_sql(query, engine)
-    df["recorded_at"] = pd.to_datetime(df["recorded_at"])
-    return df
+st.set_page_config(page_title="Atlas • Morocco traffic", page_icon=":material/route:", layout="wide")
 
 
-# --- Load data ---
-df = load_data()
+@st.cache_resource(ttl=3600, max_entries=4)
+def connection(url):
+    return make_engine(url)
 
-st.title("🚦 Casablanca Traffic Dashboard")
 
-if df.empty:
-    st.warning("No data yet. Run ingest.py a few times first, then refresh this page.")
+@st.cache_data(ttl=60, max_entries=6)
+def read_database(url, source):
+    return load_readings(connection(url), source=source)
+
+
+@st.cache_data(ttl=900, max_entries=1)
+def read_demo():
+    return demo_data()
+
+
+def configured_url():
+    if os.getenv("DATABASE_URL"):
+        return database_url()
+    try:
+        return st.secrets.get("DATABASE_URL", database_url())
+    except FileNotFoundError:
+        return database_url()
+
+
+with st.sidebar:
+    st.title(":material/route: Atlas")
+    st.caption("MOROCCO / MOBILITY OBSERVATORY")
+    page = st.radio("Workspace", ["Overview", "Patterns", "Data studio"], label_visibility="collapsed")
+    source = st.selectbox("Data source", ["Demo playground", "Live database", "Stored demo"])
+    st.caption("Synthetic observations" if source != "Live database" else "TomTom observations · refreshed on request")
+    st.space("small")
+    reference = catalog()
+    region = st.selectbox("Region", ["All regions", *sorted(reference.region.unique())])
+    options = reference if region == "All regions" else reference[reference.region == region]
+    selected_cities = st.multiselect("Cities", sorted(options.city.unique()), default=sorted(options.city.unique()))
+    window = st.select_slider("History window", options=[6, 12, 24, 48, 72, 168], value=24, format_func=lambda x: f"{x} hours")
+    if st.button("Refresh observations", icon=":material/refresh:", width="stretch"):
+        read_database.clear()
+        read_demo.clear()
+    st.space("medium")
+    st.caption("12 cities · 36 monitoring points")
+    st.caption("Times displayed in Africa/Casablanca. Monitoring points sample nearby roads; they do not represent entire cities.")
+
+st.caption("ATLAS / TRAFFIC INTELLIGENCE")
+st.title({"Overview": "A clearer view of every city.", "Patterns": "Find the rhythm of the road.", "Data studio": "Good decisions start with good data."}[page])
+st.markdown({"Overview": "Explore Morocco’s road network, one observation at a time.", "Patterns": "Compare cities, spot rush hours, and explore how traffic changes.", "Data studio": "Explore your observations, monitoring coverage, and collection history."}[page])
+
+if not selected_cities:
+    st.info("Choose at least one city in the sidebar to explore traffic.", icon=":material/location_city:")
     st.stop()
 
-# --- Sidebar filters ---
-st.sidebar.header("Filters")
-all_locations = sorted(df["location"].unique())
-selected_locations = st.sidebar.multiselect(
-    "Locations", options=all_locations, default=all_locations
-)
+if source == "Demo playground":
+    frame = read_demo()
+else:
+    try:
+        frame = read_database(configured_url(), "tomtom" if source == "Live database" else "demo")
+    except (SQLAlchemyError, OSError, ValueError):
+        st.error("The traffic database is unavailable or needs initialization.")
+        st.code("uv run python ingest.py --init-db", language="bash")
+        st.caption("Check DATABASE_URL in your environment or Streamlit secrets, then refresh. The demo playground is available without a database.")
+        st.stop()
 
-filtered_df = df[df["location"].isin(selected_locations)]
+if frame.empty:
+    st.info("No observations in the last seven days. Run the collector, then refresh.")
+    st.code("uv run python ingest.py" if source == "Live database" else "uv run python ingest.py --demo", language="bash")
+    st.stop()
 
-# --- KPIs ---
-latest = (
-    filtered_df.sort_values("recorded_at")
-    .groupby("location")
-    .tail(1)
-    .sort_values("congestion_ratio")
-)
+now = pd.Timestamp(datetime.now(timezone.utc))
+end = frame.recorded_at.max()
+start = end - pd.Timedelta(hours=window)
+filtered = frame[frame.city.isin(selected_cities) & (frame.recorded_at >= start)].copy()
+if filtered.empty:
+    st.info("No observations match these cities and this history window. Try a wider selection.")
+    st.stop()
 
-cols = st.columns(len(latest)) if len(latest) > 0 else [st]
-for col, (_, row) in zip(cols, latest.iterrows()):
-    col.metric(
-        label=row["location"],
-        value=f"{row['congestion_ratio']:.2f}",
-        help=f"current: {row['current_speed']} km/h | free flow: {row['free_flow_speed']} km/h",
-    )
+latest = snapshot(filtered)
+local_end = end.tz_convert("Africa/Casablanca")
+with st.container(horizontal=True):
+    st.badge("SYNTHETIC DATA" if source != "Live database" else "DATABASE OBSERVATIONS", color="orange" if source != "Live database" else "blue")
+    st.caption(f"Latest dataset observation {local_end:%d %b %Y · %H:%M} · {len(filtered):,} readings in selection")
+if source != "Live database":
+    st.caption("Demo values are generated for exploration. They are not measured traffic conditions.")
+else:
+    stale = int(((now - latest.recorded_at).dt.total_seconds() > 1800).sum())
+    if stale:
+        st.warning(f"{stale} of {len(latest)} monitored points have no observation within the last 30 minutes.")
 
-st.divider()
+expected = len(reference[reference.city.isin(selected_cities)])
+trend = filtered.groupby(pd.Grouper(key="recorded_at", freq="1h")).agg(congestion_pct=("congestion_pct", "mean"), current_speed=("current_speed", "mean"))
+with st.container(horizontal=True):
+    st.metric("Average speed loss", f"{latest.congestion_pct.mean():.0f}%", border=True, chart_data=trend.congestion_pct, chart_type="area", help="Mean of 100 × (1 − current speed / free-flow speed), clipped to 0–100. Higher means slower traffic.")
+    st.metric("Average road speed", f"{latest.current_speed.mean():.0f} km/h", border=True, chart_data=trend.current_speed)
+    st.metric("Heavy or closed points", f"{latest.status.isin(['Heavy', 'Closed']).sum()} / {len(latest)}", border=True, help="Heavy: below 40% of free-flow speed. Closed: provider-reported road closure.")
+    st.metric("Monitoring coverage", f"{len(latest)} / {expected}", border=True, help="Points with at least one observation inside the selected history window.")
 
-# --- Layout: chart on the left, map on the right ---
-left, right = st.columns([2, 1])
+if page == "Overview":
+    main, detail = st.columns([2.4, 1], gap="medium")
+    with main, st.container(border=True):
+        st.subheader("The network at a glance")
+        control, replay = st.columns([1, 2])
+        with control:
+            mode = st.segmented_control("Map view", ["3D columns", "2D points"], default="3D columns") or "3D columns"
+        with replay:
+            steps = sorted(filtered.recorded_at.dt.floor("15min").unique())
+            replay_index = st.select_slider("Replay observations", options=list(range(len(steps))), value=len(steps) - 1, format_func=lambda i: pd.Timestamp(steps[i]).tz_convert("Africa/Casablanca").strftime("%d %b %H:%M"), disabled=len(steps) < 2, label_visibility="collapsed")
+            replay_at = min(end, pd.Timestamp(steps[replay_index]) + pd.Timedelta(minutes=15) - pd.Timedelta(microseconds=1))
+            st.caption(f"Snapshot at {replay_at.tz_convert('Africa/Casablanca'):%d %b · %H:%M}")
+        current = snapshot(filtered, replay_at)
+        selected = traffic_map(current, mode, replay_at)
+        st.caption(":green[● Flowing]   :orange[● Moderate]   :red[● Heavy / closed]   · Gray: older than 30 min")
+        st.caption("Drag to pan · scroll to zoom · shift-drag to rotate · click a column to inspect. Height shows speed loss, not building height.")
+    with detail, st.container(border=True):
+        st.subheader("Location spotlight")
+        picked_city = selected.get("city") if selected else None
+        candidates = current[current.city == picked_city] if picked_city in current.city.values else current
+        focus_keys = candidates.location_key.tolist()
+        picked_key = f"{picked_city}/{selected.get('label')}" if selected else None
+        focus = st.selectbox("Monitoring point", focus_keys, index=focus_keys.index(picked_key) if picked_key in focus_keys else 0, format_func=lambda key: key.replace("/", " · "))
+        row = candidates[candidates.location_key == focus].iloc[0]
+        st.badge(row.status, color={"Flowing": "green", "Moderate": "orange", "Heavy": "red", "Closed": "red"}[row.status])
+        st.metric("Observed speed", f"{row.current_speed:.0f} km/h")
+        st.progress(float(min(1, max(0, row.congestion_ratio))), text=f"{min(100, row.congestion_ratio * 100):.0f}% of free-flow speed")
+        st.caption(f"Free-flow baseline: {row.free_flow_speed:.0f} km/h")
+        st.caption(f"Observed {row.recorded_at.tz_convert('Africa/Casablanca'):%d %b · %H:%M}")
+        st.caption(f"Provider confidence: {row.confidence:.0%}" if pd.notna(row.confidence) else "Provider confidence unavailable")
+        history = filtered[filtered.location_key == focus]
+        st.altair_chart(trend_chart(history, by="location", height=145))
+    left, right = st.columns([1.4, 1])
+    with left, st.container(border=True):
+        st.subheader("Traffic through the day")
+        st.altair_chart(trend_chart(filtered))
+    with right, st.container(border=True):
+        st.subheader("City pulse")
+        st.caption("Latest available observations · average speed loss")
+        st.altair_chart(city_chart(latest))
 
-with left:
-    st.subheader("Congestion over time")
-    fig = px.line(
-        filtered_df,
-        x="recorded_at",
-        y="congestion_ratio",
-        color="location",
-        markers=True,
-        labels={"recorded_at": "Time", "congestion_ratio": "Congestion ratio"},
-    )
-    fig.update_layout(yaxis_range=[0, 1.1])
-    st.plotly_chart(fig, use_container_width=True)
+elif page == "Patterns":
+    with st.container(border=True):
+        st.subheader("Compare city trends")
+        measure = st.segmented_control("Measure", ["Speed loss", "Road speed"], default="Speed loss")
+        st.altair_chart(trend_chart(filtered, metric="current_speed" if measure == "Road speed" else "congestion_pct", height=340))
+    left, right = st.columns([1.5, 1])
+    with left, st.container(border=True):
+        st.subheader("The rush-hour fingerprint")
+        hourly = filtered.assign(hour=filtered.recorded_at.dt.tz_convert("Africa/Casablanca").dt.hour).groupby(["city", "hour"], as_index=False).congestion_pct.mean()
+        chart = alt.Chart(hourly).mark_rect(cornerRadius=3).encode(
+            x=alt.X("hour:O", title="Hour · Africa/Casablanca"), y=alt.Y("city:N", title=None),
+            color=alt.Color("congestion_pct:Q", title="Speed loss %", scale=alt.Scale(domain=[0, 100], range=["#153E48", "#2DD4BF", "#FBBF24", "#FB7185"])),
+            tooltip=["city:N", "hour:O", alt.Tooltip("congestion_pct:Q", format=".1f", title="Speed loss %")]).properties(height=330)
+        st.altair_chart(chart)
+    with right, st.container(border=True):
+        st.subheader("Slowest monitoring points")
+        slow = filtered.groupby(["city", "location"], as_index=False).agg(congestion_pct=("congestion_pct", "mean"), current_speed=("current_speed", "mean")).sort_values("congestion_pct", ascending=False).head(10)
+        st.dataframe(slow, hide_index=True, column_config={"city": "City", "location": "Point", "congestion_pct": st.column_config.ProgressColumn("Speed loss", min_value=0, max_value=100, format="%.0f%%"), "current_speed": st.column_config.NumberColumn("km/h", format="%.0f")})
+        st.caption("Averages use observations in the selected window. Missing observations are not treated as free-flow traffic.")
 
-with right:
-    st.subheader("Live map")
-    center_lat = filtered_df["lat"].mean()
-    center_lon = filtered_df["lon"].mean()
-    m = folium.Map(location=[center_lat, center_lon], zoom_start=12)
+else:
+    view = st.segmented_control("Explore", ["Observations", "City catalog", "Pipeline health"], default="Observations")
+    if view == "City catalog":
+        st.subheader("A growing observation network")
+        st.caption("Approximate district monitoring coordinates. Live road coverage depends on the provider response at each point.")
+        st.dataframe(reference[reference.city.isin(selected_cities)].drop(columns="location_key"), hide_index=True, column_config={"city": "City", "region": "Region", "location": "Monitoring point", "lat": st.column_config.NumberColumn("Latitude", format="%.4f"), "lon": st.column_config.NumberColumn("Longitude", format="%.4f")})
+    elif view == "Pipeline health":
+        st.subheader("Quality at a glance")
+        checks = pd.DataFrame({"Check": ["Missing speed values", "Duplicate point / time / source", "Invalid speed values", "Missing provider confidence"], "Rows": [int(filtered.current_speed.isna().sum()), int(filtered.duplicated(["location_key", "recorded_at", "source"]).sum()), int(((filtered.current_speed < 0) | (filtered.free_flow_speed <= 0)).sum()), int(filtered.confidence.isna().sum())]})
+        st.dataframe(checks, hide_index=True)
+        st.subheader("Collection runs")
+        if source == "Demo playground":
+            st.caption("The playground is generated in memory; no collection runs are written to your database.")
+        else:
+            try:
+                with connection(configured_url()).connect() as conn:
+                    runs = pd.read_sql(select(batches).where(batches.c.source == ("tomtom" if source == "Live database" else "demo")).order_by(batches.c.started_at.desc()).limit(50), conn)
+                st.dataframe(runs, hide_index=True)
+            except SQLAlchemyError:
+                st.info("Collection history is unavailable. Initialize the current database schema.")
+        st.caption("Storage model: cities → monitoring points → observations. Collection runs track successes and failures; original provider payloads are retained for audit.")
+    else:
+        st.subheader("Observation explorer")
+        search = st.text_input("Find a monitoring point", placeholder="Search by city or district…")
+        statuses = st.multiselect("Traffic condition", ["Flowing", "Moderate", "Heavy", "Closed"], default=["Flowing", "Moderate", "Heavy", "Closed"])
+        export = filtered[filtered.status.isin(statuses)]
+        if search:
+            export = export[export.location_key.str.contains(search, case=False, regex=False)]
+        st.caption(f"{len(export):,} matching observations · newest 1,000 shown")
+        observation_table(export.sort_values("recorded_at", ascending=False).head(1000))
+        st.download_button("Download filtered CSV", export.to_csv(index=False).encode("utf-8"), file_name="atlas-traffic-observations.csv", mime="text/csv", icon=":material/download:")
 
-    for _, row in latest.iterrows():
-        color = (
-            "green"
-            if row["congestion_ratio"] >= 0.7
-            else ("orange" if row["congestion_ratio"] >= 0.4 else "red")
-        )
-        folium.CircleMarker(
-            location=[row["lat"], row["lon"]],
-            radius=12,
-            color=color,
-            fill=True,
-            fill_opacity=0.8,
-            popup=f"{row['location']}: {row['congestion_ratio']:.2f}",
-        ).add_to(m)
-
-    st_folium(m, width=400, height=400)
-
-st.divider()
-
-# --- Raw data table (optional, collapsible) ---
-with st.expander("Show raw data"):
-    st.dataframe(filtered_df.sort_values("recorded_at", ascending=False))
+st.caption("ATLAS · Morocco mobility observatory / Congestion is measured as speed loss relative to free flow. Observations describe sampled road segments only.")
