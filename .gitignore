@@ -13,6 +13,7 @@ Constants.py
 .claude/skills/developing-with-streamlit
 venv/
 .env
+.env.production
 .streamlit/secrets.toml
 data/*.db
 data/*.db-*

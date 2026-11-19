@@ -1,0 +1,13 @@
+{
+  "source": "https://download.geonames.org/export/dump/cities500.zip",
+  "license": "CC BY 4.0",
+  "attribution": "GeoNames (www.geonames.org)",
+  "retrieved_at": "2026-11-19T02:48:35.568857+00:00",
+  "source_sha256": "682a5f7e48463d64663755b3a4e17219dc4f27cea35d4b88c194d73a9bf453d1",
+  "country_filter": "MA",
+  "excluded_feature_codes": [
+    "PPLX"
+  ],
+  "places": 475,
+  "note": "City and town dataset, including administrative seats; not an exhaustive register or a guarantee of traffic coverage."
+}

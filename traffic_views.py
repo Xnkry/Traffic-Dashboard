@@ -35,7 +35,7 @@ def traffic_map(frame, mode, at):
     points, national = map_data(frame, at)
     three_d = mode == "3D columns"
     span = max(float(points.lat.max() - points.lat.min()), float(points.lon.max() - points.lon.min()), .025)
-    zoom = max(5, min(12, math.log2(200 / span)))
+    zoom = max(4.2, min(12, math.log2(200 / span)))
     layer = pdk.Layer("ColumnLayer" if three_d else "ScatterplotLayer",
         data=points.to_dict("records"), id="traffic", get_position="[lon, lat]",
         get_fill_color="color", get_elevation="elevation", elevation_scale=1,
@@ -46,7 +46,7 @@ def traffic_map(frame, mode, at):
         get_position="[lon, lat, elevation]" if three_d else "[lon, lat]",
         get_text="label", get_color=[226, 232, 240], get_size=11,
         get_pixel_offset=[0, -12], get_text_anchor="middle", get_alignment_baseline="bottom")
-    deck = pdk.Deck(layers=[layer, labels], map_provider="carto", map_style=pdk.map_styles.DARK,
+    deck = pdk.Deck(layers=[layer, labels] if len(points) <= 20 else [layer], map_provider="carto", map_style=pdk.map_styles.DARK,
         initial_view_state=pdk.ViewState(latitude=float(points.lat.mean()), longitude=float(points.lon.mean()),
             zoom=zoom, pitch=48 if three_d else 0, bearing=-12 if three_d else 0),
         tooltip={"text": "{label}\nSpeed: {speed} km/h\nSpeed loss: {loss}%\nOldest contributing observation: {observed}"})
@@ -56,6 +56,8 @@ def traffic_map(frame, mode, at):
 
 
 def trend_chart(frame, by="city", metric="congestion_pct", height=240):
+    top = frame.groupby(by).congestion_pct.mean().nlargest(12).index
+    frame = frame[frame[by].isin(top)]
     values = frame.groupby([by, pd.Grouper(key="recorded_at", freq="1h")], as_index=False)[metric].mean()
     values["local_time"] = values.recorded_at.dt.tz_convert("Africa/Casablanca").dt.tz_localize(None)
     title = "Speed loss (%)" if metric == "congestion_pct" else "Speed (km/h)"
@@ -68,7 +70,7 @@ def trend_chart(frame, by="city", metric="congestion_pct", height=240):
 
 
 def city_chart(frame):
-    values = frame.groupby("city", as_index=False).congestion_pct.mean()
+    values = frame.groupby("city", as_index=False).congestion_pct.mean().nlargest(15, "congestion_pct")
     return alt.Chart(values).mark_bar(cornerRadiusEnd=4, size=12).encode(
         x=alt.X("congestion_pct:Q", title="Speed loss (%)", scale=alt.Scale(domain=[0, 100])),
         y=alt.Y("city:N", sort="-x", title=None),

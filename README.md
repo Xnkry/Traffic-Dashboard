@@ -1,8 +1,10 @@
 # Atlas · Morocco traffic observatory
 
-A Streamlit dashboard for exploring traffic across **12 Moroccan cities and 36 monitoring points**. Built on the original Casablanca collector, with a dark teal theme, interactive 2D/3D maps, time replay, city comparisons, hourly heatmaps, and a searchable observation explorer.
+A Streamlit dashboard for exploring traffic across **475 Moroccan cities and towns with 499 monitoring points**. Built on the original Casablanca collector, with a dark teal theme, interactive 2D/3D maps, time replay, city comparisons, hourly heatmaps, and a searchable observation explorer.
 
 ![Atlas dashboard with Morocco's 3D traffic map and monitoring metrics](docs/dashboard.png)
+
+For deployment, HTTPS, API scheduling, and refresh settings, see [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ## Open the dashboard
 
@@ -30,7 +32,7 @@ uv run --env-file .env python ingest.py
 uv run --env-file .env streamlit run dashboard.py
 ```
 
-Choose **Live database** in the dashboard. The refresh button rereads stored observations; it does not call the provider. The dashboard never substitutes synthetic readings for a failed live database connection. Environment variables take precedence over `DATABASE_URL` in `.streamlit/secrets.toml`. Local secrets, `.env`, databases, and SQL backups are ignored by Git.
+Choose **Live database** in the dashboard. Auto-refresh rereads stored observations every 60 seconds by default for live data; the sidebar allows 30–300 seconds or manual refresh. It never calls the provider. The dashboard never substitutes synthetic readings for a failed live database connection. Environment variables take precedence over `DATABASE_URL` in `.streamlit/secrets.toml`. Local secrets, `.env`, databases, and SQL backups are ignored by Git.
 
 For a smaller collection batch:
 
@@ -38,11 +40,11 @@ For a smaller collection batch:
 uv run --env-file .env python ingest.py --cities Casablanca Rabat
 ```
 
-Schedule the collector every 5–15 minutes using your scheduler, within your API allowance. Each run makes one request per selected monitoring point, with up to three retries for transient failures. The API key is read only from the environment. The former ignored `Constants.py` file is no longer imported by the application.
+Run `uv run --env-file .env python collector.py --interval 3600 --max-points 36` for automatic hourly collection. Adjust the interval and point limit to your API allowance; `--max-points 0` enables all selected points. Each run makes one request per selected monitoring point, with up to three retries for transient failures. The API key is read only from the environment. The former ignored `Constants.py` file is no longer imported by the application.
 
 ## Cities
 
-Casablanca, Rabat, Marrakech, Tangier, Fès, Agadir, Meknès, Oujda, Kénitra, Tétouan, El Jadida, and Safi. Each city has three district monitoring coordinates in `city_catalog.py`. These approximate sample points are sent to TomTom, which returns a nearby road segment. A city’s three samples are **not a citywide congestion estimate**; provider coverage varies by point.
+The original 12 cities retain their three district monitoring points. An additional 463 cities and towns have one center point each, sourced from [GeoNames](https://www.geonames.org/) under CC BY 4.0. The complete catalog is in `data/cities.csv`, with provenance in `data/cities-source.json`. Select **all cities and towns** in the sidebar to explore the full catalog. The default selection remains the original 12 cities. These samples are **not citywide congestion estimates**; provider coverage varies by point. Charts limit comparisons to the busiest selected cities to remain readable.
 
 ## Database and pipeline
 

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pandas as pd
 
 
@@ -18,9 +20,14 @@ CITY_POINTS = [
 
 
 def catalog() -> pd.DataFrame:
-    return pd.DataFrame([
-        {"location_key": f"{city}/{name}", "city": city, "region": region,
-         "location": name, "lat": lat, "lon": lon}
-        for city, region, points in CITY_POINTS
-        for name, lat, lon in points
-    ])
+    places = pd.read_csv(Path(__file__).parent / "data/cities.csv")
+    original = {city: points for city, _, points in CITY_POINTS}
+    rows = []
+    for city in places.itertuples():
+        points = original.get(city.city, [("City centre", city.lat, city.lon)])
+        for name, lat, lon in points:
+            rows.append({"location_key": f"{city.city}/{name}", "city": city.city,
+                "region": city.region, "location": name, "lat": lat, "lon": lon,
+                "geoname_id": city.geoname_id, "population": city.population,
+                "coordinate_source": "Original district catalog" if city.city in original else "GeoNames"})
+    return pd.DataFrame(rows)

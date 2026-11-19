@@ -1,0 +1,57 @@
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: traffic_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}
+      POSTGRES_DB: traffic_db
+    volumes:
+      - production_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U traffic_user -d traffic_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+  migrate:
+    build: .
+    image: atlas-traffic:local
+    command: ["python", "ingest.py", "--init-db"]
+    environment:
+      DATABASE_URL: postgresql://traffic_user:${POSTGRES_PASSWORD}@db:5432/traffic_db
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+  dashboard:
+    build: .
+    image: atlas-traffic:local
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8501:8501"
+    environment:
+      DATABASE_URL: postgresql://traffic_user:${POSTGRES_PASSWORD}@db:5432/traffic_db
+      DEFAULT_DATA_SOURCE: Live database
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+  collector:
+    build: .
+    image: atlas-traffic:local
+    restart: unless-stopped
+    command: ["python", "collector.py"]
+    environment:
+      DATABASE_URL: postgresql://traffic_user:${POSTGRES_PASSWORD}@db:5432/traffic_db
+      TOMTOM_API_KEY: ${TOMTOM_API_KEY:?Set TOMTOM_API_KEY in .env.production}
+      COLLECT_INTERVAL_SECONDS: ${COLLECT_INTERVAL_SECONDS:-3600}
+      COLLECT_MAX_POINTS: ${COLLECT_MAX_POINTS:-36}
+      COLLECT_CITIES: ${COLLECT_CITIES:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      disable: true
+    stop_grace_period: 20s
+volumes:
+  production_pgdata:

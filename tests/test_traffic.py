@@ -1,7 +1,9 @@
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
+
+from collector import collection_command, main as collector_main
 
 import pandas as pd
 from sqlalchemy import func, select
@@ -28,9 +30,9 @@ class TrafficDataTests(unittest.TestCase):
     def test_catalog_seed_is_idempotent(self):
         initialize_database(self.engine)
         with self.engine.connect() as conn:
-            self.assertEqual(conn.scalar(select(func.count()).select_from(cities)), 12)
-            self.assertEqual(conn.scalar(select(func.count()).select_from(locations)), 36)
-        self.assertEqual(catalog().location_key.nunique(), 36)
+            self.assertEqual(conn.scalar(select(func.count()).select_from(cities)), catalog().city.nunique())
+            self.assertEqual(conn.scalar(select(func.count()).select_from(locations)), len(catalog()))
+        self.assertEqual(catalog().location_key.nunique(), len(catalog()))
 
     def test_invalid_provider_values_are_rejected(self):
         for flow in [
@@ -55,7 +57,7 @@ class TrafficDataTests(unittest.TestCase):
         now = datetime(2026, 11, 19, 12, tzinfo=timezone.utc)
         a, b = demo_data(now, days=1), demo_data(now, days=1)
         pd.testing.assert_frame_equal(a, b)
-        self.assertEqual(len(a), 36 * 96)
+        self.assertEqual(len(a), len(catalog()) * 96)
         self.assertTrue(a.source.eq("demo").all())
         self.assertTrue(a.congestion_pct.between(0, 100).all())
 
@@ -76,14 +78,48 @@ class TrafficDataTests(unittest.TestCase):
         frame = demo_data(days=1)
         at = frame.recorded_at.min() + pd.Timedelta(hours=2)
         snap = snapshot(frame, at)
-        self.assertEqual(len(snap), 36)
+        self.assertEqual(len(snap), len(catalog()))
         self.assertTrue(snap.recorded_at.le(at).all())
         points, national = map_data(snap, at)
         self.assertTrue(national)
-        self.assertEqual(len(points), 12)
+        self.assertEqual(len(points), catalog().city.nunique())
         points, national = map_data(snap[snap.city == "Casablanca"], at)
         self.assertFalse(national)
         self.assertEqual(len(points), 3)
+
+    def test_bulk_chunks_preserve_transaction_atomicity(self):
+        now = datetime.now(timezone.utc)
+        records = demo_data(now, days=2, selected_cities=["Casablanca"]).head(501).to_dict("records")
+        self.assertEqual(save_batch(self.engine, records, "bulk", now, "demo", 501, 0), 501)
+        invalid = [{**r, "recorded_at": r["recorded_at"] + pd.Timedelta(days=1)} for r in records]
+        invalid[-1]["free_flow_speed"] = 0
+        with self.assertRaises(IntegrityError):
+            save_batch(self.engine, invalid, "rollback", now, "demo", 501, 0)
+        with self.engine.connect() as conn:
+            self.assertEqual(conn.scalar(select(func.count()).select_from(readings)), 501)
+            self.assertEqual(conn.scalar(select(func.count()).select_from(batches)), 1)
+
+
+class CollectorTests(unittest.TestCase):
+    def test_city_names_are_passed_as_individual_arguments(self):
+        command = collection_command(["El Jadida", "Fès"], 10)
+        self.assertEqual(command[-3:], ["--cities", "El Jadida", "Fès"])
+        self.assertIn("10", command)
+
+    @patch.dict("os.environ", {"TOMTOM_API_KEY": "test"})
+    @patch("collector.signal.signal")
+    @patch("collector.subprocess.Popen")
+    def test_once_exits_with_collection_status(self, popen, _signal):
+        child = popen.return_value.__enter__.return_value
+        child.poll.return_value = 1
+        child.returncode = 1
+        self.assertEqual(collector_main(["--once", "--max-points", "5"]), 1)
+        popen.assert_called_once()
+
+    @patch.dict("os.environ", {"TOMTOM_API_KEY": "test"})
+    def test_invalid_interval_is_rejected(self):
+        with self.assertRaises(SystemExit):
+            collector_main(["--interval", "0", "--once"])
 
 
 class DashboardTests(unittest.TestCase):
@@ -122,6 +158,18 @@ class DashboardTests(unittest.TestCase):
         app.select_slider[1].set_value(0).run()
         self.assertFalse(app.exception)
         self.assertTrue(app.get("deck_gl_json_chart"))
+
+
+    def test_expanded_catalog_and_refresh_controls(self):
+        app = self.app()
+        app.sidebar.toggle[0].set_value(True).run(timeout=40)
+        self.assertFalse(app.exception)
+        self.assertEqual(app.metric[3].value, f"{len(catalog())} / {len(catalog())}")
+        app.sidebar.radio[0].set_value("Patterns").run(timeout=40)
+        self.assertFalse(app.exception)
+        app.sidebar.toggle[1].set_value(True).run(timeout=40)
+        self.assertFalse(app.exception)
+        self.assertTrue(any("Dashboard refreshes every" in c.value for c in app.caption))
 
 
 if __name__ == "__main__":

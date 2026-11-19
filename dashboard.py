@@ -1,4 +1,5 @@
 import os
+import time
 from datetime import datetime, timezone
 
 import altair as alt
@@ -7,7 +8,7 @@ import streamlit as st
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
-from city_catalog import catalog
+from city_catalog import CITY_POINTS, catalog
 from traffic_data import batches, database_url, demo_data, load_readings, make_engine, snapshot
 from traffic_views import traffic_map, trend_chart, city_chart, observation_table
 
@@ -25,9 +26,9 @@ def read_database(url, source):
     return load_readings(connection(url), source=source)
 
 
-@st.cache_data(ttl=900, max_entries=1)
-def read_demo():
-    return demo_data()
+@st.cache_data(ttl=900, max_entries=6)
+def read_demo(city_names):
+    return demo_data(selected_cities=city_names)
 
 
 def configured_url():
@@ -43,21 +44,43 @@ with st.sidebar:
     st.title(":material/route: Atlas")
     st.caption("MOROCCO / MOBILITY OBSERVATORY")
     page = st.radio("Workspace", ["Overview", "Patterns", "Data studio"], label_visibility="collapsed")
-    source = st.selectbox("Data source", ["Demo playground", "Live database", "Stored demo"])
-    st.caption("Synthetic observations" if source != "Live database" else "TomTom observations · refreshed on request")
+    source_options = ["Demo playground", "Live database", "Stored demo"]
+    default_source = os.getenv("DEFAULT_DATA_SOURCE", "Demo playground")
+    source = st.selectbox("Data source", source_options, index=source_options.index(default_source) if default_source in source_options else 0)
+    st.caption("Synthetic observations" if source != "Live database" else "TomTom observations · automatic database refresh")
     st.space("small")
     reference = catalog()
     region = st.selectbox("Region", ["All regions", *sorted(reference.region.unique())])
     options = reference if region == "All regions" else reference[reference.region == region]
-    selected_cities = st.multiselect("Cities", sorted(options.city.unique()), default=sorted(options.city.unique()))
+    all_cities = st.toggle("Select all cities and towns", value=False)
+    defaults = sorted(options.city.unique()) if all_cities or region != "All regions" else sorted(city for city, _, _ in CITY_POINTS)
+    selected_cities = st.multiselect("Cities", sorted(options.city.unique()), default=defaults)
     window = st.select_slider("History window", options=[6, 12, 24, 48, 72, 168], value=24, format_func=lambda x: f"{x} hours")
     if st.button("Refresh observations", icon=":material/refresh:", width="stretch"):
         read_database.clear()
         read_demo.clear()
     st.space("medium")
-    st.caption("12 cities · 36 monitoring points")
+    auto_refresh = st.toggle("Auto-refresh dashboard", value=source == "Live database")
+    refresh_seconds = st.selectbox("Refresh every", [30, 60, 120, 300], index=1, format_func=lambda n: f"{n} seconds", disabled=not auto_refresh)
+    st.caption(f"{reference.city.nunique()} cities and towns · {len(reference)} monitoring points")
+    st.caption("City center coordinates: GeoNames · CC BY 4.0")
     st.caption("Times displayed in Africa/Casablanca. Monitoring points sample nearby roads; they do not represent entire cities.")
 
+st.session_state["last_page_refresh"] = time.monotonic()
+st.session_state["last_page_refresh_utc"] = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+
+
+@st.fragment(run_every=refresh_seconds if auto_refresh else None)
+def refresh_clock():
+    elapsed = time.monotonic() - st.session_state["last_page_refresh"]
+    if auto_refresh and elapsed >= refresh_seconds - 1:
+        read_database.clear()
+        st.rerun()
+    if auto_refresh:
+        st.caption(f"Dashboard refreshes every {refresh_seconds}s while open. Last refresh: {st.session_state['last_page_refresh_utc']}. API collection runs separately.")
+
+
+refresh_clock()
 st.caption("ATLAS / TRAFFIC INTELLIGENCE")
 st.title({"Overview": "A clearer view of every city.", "Patterns": "Find the rhythm of the road.", "Data studio": "Good decisions start with good data."}[page])
 st.markdown({"Overview": "Explore Morocco’s road network, one observation at a time.", "Patterns": "Compare cities, spot rush hours, and explore how traffic changes.", "Data studio": "Explore your observations, monitoring coverage, and collection history."}[page])
@@ -67,7 +90,7 @@ if not selected_cities:
     st.stop()
 
 if source == "Demo playground":
-    frame = read_demo()
+    frame = read_demo(tuple(sorted(selected_cities)))
 else:
     try:
         frame = read_database(configured_url(), "tomtom" if source == "Live database" else "demo")
@@ -145,21 +168,26 @@ if page == "Overview":
     left, right = st.columns([1.4, 1])
     with left, st.container(border=True):
         st.subheader("Traffic through the day")
+        st.caption("Showing up to 12 cities with the highest average speed loss in this selection.")
         st.altair_chart(trend_chart(filtered))
     with right, st.container(border=True):
         st.subheader("City pulse")
-        st.caption("Latest available observations · average speed loss")
+        st.caption("Latest available observations · highest 15 city averages")
         st.altair_chart(city_chart(latest))
 
 elif page == "Patterns":
     with st.container(border=True):
         st.subheader("Compare city trends")
+        st.caption("Showing up to 12 cities with the highest average speed loss. Select fewer cities to compare a specific group.")
         measure = st.segmented_control("Measure", ["Speed loss", "Road speed"], default="Speed loss")
         st.altair_chart(trend_chart(filtered, metric="current_speed" if measure == "Road speed" else "congestion_pct", height=340))
     left, right = st.columns([1.5, 1])
     with left, st.container(border=True):
         st.subheader("The rush-hour fingerprint")
         hourly = filtered.assign(hour=filtered.recorded_at.dt.tz_convert("Africa/Casablanca").dt.hour).groupby(["city", "hour"], as_index=False).congestion_pct.mean()
+        top_cities = filtered.groupby("city").congestion_pct.mean().nlargest(20).index
+        hourly = hourly[hourly.city.isin(top_cities)]
+        st.caption("Up to 20 cities with the highest average speed loss.")
         chart = alt.Chart(hourly).mark_rect(cornerRadius=3).encode(
             x=alt.X("hour:O", title="Hour · Africa/Casablanca"), y=alt.Y("city:N", title=None),
             color=alt.Color("congestion_pct:Q", title="Speed loss %", scale=alt.Scale(domain=[0, 100], range=["#153E48", "#2DD4BF", "#FBBF24", "#FB7185"])),

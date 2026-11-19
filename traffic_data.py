@@ -122,7 +122,7 @@ def enrich(frame):
     return frame
 
 
-def demo_data(now=None, days=7):
+def demo_data(now=None, days=7, selected_cities=None):
     end = pd.Timestamp(now or datetime.now(timezone.utc)).floor("15min")
     if end.tzinfo is None:
         end = end.tz_localize("UTC")
@@ -132,7 +132,10 @@ def demo_data(now=None, days=7):
     rush = np.exp(-((hours - 8.5) / 1.7) ** 2) + np.exp(-((hours - 18) / 2.1) ** 2)
     rng = np.random.default_rng(42)
     frames = []
-    for index, row in enumerate(catalog().to_dict("records")):
+    points = catalog()
+    if selected_cities is not None:
+        points = points[points.city.isin(selected_cities)]
+    for index, row in enumerate(points.to_dict("records")):
         free = [50, 60, 80][index % 3]
         ratio = np.clip(.9 - (.35 + index % 5 * .07) * rush
             + .04 * np.sin(hours + index) + rng.normal(0, .035, len(times)), .12, 1)
