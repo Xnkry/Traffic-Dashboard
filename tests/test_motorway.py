@@ -55,4 +55,39 @@ class MotorwayTests(unittest.TestCase):
             assert len(app.metric)==3
             app.toggle[0].set_value(True).run()
             assert not app.exception, app.exception
-        
+
+    def test_fresh_database_initializes_and_displays_import_prompt(self):
+        from tempfile import TemporaryDirectory
+        from pathlib import Path
+        from sqlalchemy import create_engine, inspect, text
+        from streamlit.testing.v1 import AppTest
+        from road_dashboard import road_connection, road_city_data
+        with TemporaryDirectory() as directory:
+            url = "sqlite:///" + str(Path(directory) / "fresh.db")
+            engine = create_engine(url)
+            with engine.begin() as conn:
+                conn.execute(text("CREATE TABLE existing_data (value INTEGER)"))
+                conn.execute(text("INSERT INTO existing_data VALUES (7)"))
+            for module, args in [("motorway_dashboard", '"Live database"'), ("road_dashboard", '["Casablanca"], "Live database"')]:
+                app = AppTest.from_string(f"from {module} import render; render({url!r}, {args})").run(timeout=60)
+                self.assertFalse(app.exception)
+                self.assertFalse(app.error)
+                self.assertTrue(app.info)
+                self.assertTrue(app.code)
+            self.assertIn("road_segments", inspect(engine).get_table_names())
+            with engine.connect() as conn:
+                self.assertEqual(conn.scalar(text("SELECT value FROM existing_data")), 7)
+            road_connection(url).dispose()
+            road_connection.clear()
+            road_city_data.clear()
+            engine.dispose()
+
+    def test_pandas_database_failure_is_not_presented_as_empty_inventory(self):
+        import pandas as pd
+        from streamlit.testing.v1 import AppTest
+        with patch("motorway_dashboard.road_city_data", side_effect=pd.errors.DatabaseError("private database details")):
+            app = AppTest.from_string('from motorway_dashboard import render; render("sqlite://", "Live database")').run(timeout=60)
+            self.assertFalse(app.exception)
+            self.assertIn("database unavailable", app.error[0].value)
+            self.assertFalse(app.code)
+            self.assertNotIn("private database details", app.error[0].value)
