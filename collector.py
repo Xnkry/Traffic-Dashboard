@@ -71,7 +71,9 @@ def main(argv=None):
                     break
             else:
                 result = child.returncode
-        if args.once:
+        if args.once or (args.road_city and result == 2):
+            if args.road_city and result == 2:
+                logging.error("Collection stopped: import the road inventory successfully before starting this worker.")
             return result
         if result:
             logging.warning("Collection finished with status %s; retrying at the next interval", result)
