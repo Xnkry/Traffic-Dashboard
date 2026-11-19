@@ -19,8 +19,9 @@ def render(url, source):
         road_city_data.clear()
     try:
         roads, history, poll, area, incident_history = road_city_data(url, STUDY)
-    except SQLAlchemyError:
-        roads = pd.DataFrame()
+    except (SQLAlchemyError, pd.errors.DatabaseError):
+        st.error("Motorway database unavailable. Check DATABASE_URL, connectivity and schema permissions.")
+        return
     if roads.empty:
         st.info("Import the motorway inventory to start this study.")
         st.code(f'uv run --env-file .env python road_ingest.py import --city "{STUDY}"', language="bash")
