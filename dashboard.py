@@ -43,7 +43,7 @@ def configured_url():
 with st.sidebar:
     st.title(":material/route: Atlas")
     st.caption("MOROCCO / MOBILITY OBSERVATORY")
-    page = st.radio("Workspace", ["Overview", "Avenue intelligence", "Patterns", "Data studio"], label_visibility="collapsed")
+    page = st.radio("Workspace", ["Overview", "Avenue intelligence", "Motorway study", "Patterns", "Data studio"], label_visibility="collapsed")
     source_options = ["Demo playground", "Live database", "Stored demo"]
     default_source = os.getenv("DEFAULT_DATA_SOURCE", "Demo playground")
     source = st.selectbox("Data source", source_options, index=source_options.index(default_source) if default_source in source_options else 0)
@@ -81,6 +81,11 @@ def refresh_clock():
 
 
 refresh_clock()
+if page == "Motorway study":
+    from motorway_dashboard import render
+    render(configured_url(), source)
+    st.stop()
+
 if page == "Avenue intelligence":
     from road_dashboard import render
     render(configured_url(), selected_cities, source)
