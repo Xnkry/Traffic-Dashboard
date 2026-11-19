@@ -6,7 +6,7 @@ ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy PATH="/app/.venv/bin:$PATH" PYTHONUN
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 RUN uv sync --locked --no-dev
-COPY dashboard.py traffic_data.py traffic_views.py city_catalog.py ingest.py collector.py road_analysis.py road_store.py road_ingest.py road_dashboard.py network_inventory.py ./
+COPY dashboard.py traffic_data.py traffic_views.py city_catalog.py ingest.py collector.py road_analysis.py road_store.py road_ingest.py road_dashboard.py network_inventory.py motorway.py motorway_dashboard.py ./
 COPY .streamlit/config.toml .streamlit/config.toml
 COPY db ./db
 COPY data/cities.csv data/cities.csv
