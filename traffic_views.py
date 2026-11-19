@@ -45,7 +45,7 @@ def traffic_map(frame, mode, at):
     labels = pdk.Layer("TextLayer", id="labels", data=points.to_dict("records"),
         get_position="[lon, lat, elevation]" if three_d else "[lon, lat]",
         get_text="label", get_color=[226, 232, 240], get_size=11,
-        get_pixel_offset=[0, -12], get_text_anchor="middle", get_alignment_baseline="bottom")
+        get_pixel_offset=[0, -12], get_text_anchor=pdk.types.String("middle"), get_alignment_baseline=pdk.types.String("bottom"))
     deck = pdk.Deck(layers=[layer, labels] if len(points) <= 20 else [layer], map_provider="carto", map_style=pdk.map_styles.DARK,
         initial_view_state=pdk.ViewState(latitude=float(points.lat.mean()), longitude=float(points.lon.mean()),
             zoom=zoom, pitch=48 if three_d else 0, bearing=-12 if three_d else 0),
