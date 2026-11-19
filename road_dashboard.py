@@ -8,13 +8,19 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from road_analysis import INCIDENT_TYPES, assess
-from road_store import areas, load_city, load_incident_history
+from road_store import areas, initialize, load_city, load_incident_history
 from traffic_data import make_engine
 
 
 @st.cache_resource(ttl=3600, max_entries=4)
 def road_connection(url):
-    return make_engine(url)
+    engine = make_engine(url)
+    try:
+        initialize(engine)
+    except (SQLAlchemyError, pd.errors.DatabaseError):
+        engine.dispose()
+        raise
+    return engine
 
 
 @st.cache_data(ttl=30, max_entries=8)
@@ -31,8 +37,9 @@ def render(url, selected_cities, source):
     try:
         with road_connection(url).connect() as conn:
             available = list(conn.scalars(select(areas.c.city).order_by(areas.c.city)))
-    except SQLAlchemyError:
-        available = []
+    except (SQLAlchemyError, pd.errors.DatabaseError):
+        st.error("Road database unavailable. Check DATABASE_URL, connectivity and schema permissions.")
+        return
     eligible = [city for city in available if city in selected_cities]
     if not eligible:
         st.info("No imported road inventory for the selected cities. Import a study area first; city-center samples do not cover avenues.")
@@ -44,7 +51,7 @@ def render(url, selected_cities, source):
         road_city_data.clear()
     try:
         roads, history, poll, area, incident_history = road_city_data(url, city)
-    except SQLAlchemyError:
+    except (SQLAlchemyError, pd.errors.DatabaseError):
         st.error("Road observations are unavailable. Check the database and initialize the road schema.")
         return
     now = pd.Timestamp.now(tz="UTC")
