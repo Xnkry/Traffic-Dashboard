@@ -35,3 +35,9 @@ The historical heatmap uses median loss per 0.05-degree latitude band and 12-hou
 Weekly baselines need at least four prior distinct dates for matching sample, provider geometry, weekday and hour. Nearby incident reports are evidence, not proof of the cause of congestion. Speed data alone cannot measure traffic volume, occupancy, or prove excessive demand. Zero reported accidents does not prove no accident occurred.
 
 Road geometry: OpenStreetMap contributors, ODbL, https://www.openstreetmap.org/copyright. Incident API: https://docs.tomtom.com/traffic-api/documentation/tomtom-maps/v1/traffic-incidents/incident-details
+
+## Import troubleshooting
+
+Imports log each map-server request and response. By default they try two servers, with a five-second connect timeout and 45-second read inactivity timeout per request. `OVERPASS_URLS` accepts a comma-separated HTTPS endpoint list; `OVERPASS_READ_TIMEOUT` accepts 10–180 seconds. A server returning an incomplete response is never used. These are per-request inactivity timeouts, not a total import deadline.
+
+If both servers fail, retry later or supply an Overpass JSON file with `--network-file`. Ctrl-C cancels with a short message. The collector exits with status 2 when the study inventory is missing, rather than retrying that setup error indefinitely. Run the import successfully before starting the collector, using the same `DATABASE_URL` / `.env` for both.
