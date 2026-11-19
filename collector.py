@@ -9,6 +9,7 @@ from threading import Event
 import time
 
 from city_catalog import catalog
+from motorway import STUDY
 
 
 def collection_command(cities, max_points, road_city=None, avenue=None, corridor=None):
@@ -36,7 +37,7 @@ def main(argv=None):
         parser.error("Use interval >= 60 seconds, max-points >= 0, and timeout >= 1 second")
     if (args.avenue or args.corridor) and not args.road_city:
         parser.error("--avenue requires --road-city")
-    if args.road_city and args.road_city not in set(catalog().city):
+    if args.road_city and args.road_city not in set(catalog().city) | {STUDY}:
         parser.error("Unknown road city")
     if not set(args.cities).issubset(set(catalog().city)):
         parser.error("COLLECT_CITIES contains an unknown city")
@@ -52,7 +53,7 @@ def main(argv=None):
     count = min(len(points), args.max_points) if args.max_points else len(points)
     logging.info("Collecting %s points every %ss; approximately %.0f requests/day before retries", count, args.interval, count * 86400 / args.interval)
     if args.road_city:
-        logging.info("Avenue mode: %s, at most %s road samples plus one incident request per batch", args.road_city, args.max_points or 50)
+        logging.info("Avenue mode: %s, at most %s road samples plus incident requests per batch (motorway mode uses corridor tiles)", args.road_city, args.max_points or 50)
     command = collection_command(args.cities, args.max_points, args.road_city, args.avenue, args.corridor)
     while not stop.is_set():
         started = time.monotonic()
