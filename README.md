@@ -94,3 +94,7 @@ Tests cover schema seeding, invalid provider responses, deterministic demo data,
 ## References
 
 [TomTom Flow Segment Data](https://docs.tomtom.com/traffic-api/documentation/tomtom-maps/v1/traffic-flow/flow-segment-data) · [PyDeck](https://deckgl.readthedocs.io/en/latest/deck.html)
+
+## Motorway speed study
+
+The **Motorway study** workspace maps Casablanca–Marrakech A3 speed loss, reported accident locations and historical speed patterns. See [setup, collection and interpretation](MOTORWAY_STUDY.md).
