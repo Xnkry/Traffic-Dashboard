@@ -6,6 +6,10 @@ A Streamlit dashboard for exploring traffic across **475 Moroccan cities and tow
 
 For deployment, HTTPS, API scheduling, and refresh settings, see [DEPLOYMENT.md](DEPLOYMENT.md).
 
+## Avenue-level analysis
+
+The project now includes **Avenue intelligence**: administrative road-network extraction, per-segment flow, reported accidents, and historical congestion patterns. See [AVENUE_ANALYSIS.md](AVENUE_ANALYSIS.md) for importing every eligible mapped road in a city, collecting observations, coverage limits, and the research methodology. City-center samples alone do not represent all avenues.
+
 ## Open the dashboard
 
 ```bash
