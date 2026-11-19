@@ -47,6 +47,9 @@ services:
       COLLECT_INTERVAL_SECONDS: ${COLLECT_INTERVAL_SECONDS:-3600}
       COLLECT_MAX_POINTS: ${COLLECT_MAX_POINTS:-36}
       COLLECT_CITIES: ${COLLECT_CITIES:-}
+      COLLECT_ROAD_CITY: ${COLLECT_ROAD_CITY:-}
+      COLLECT_AVENUE: ${COLLECT_AVENUE:-}
+      COLLECT_CORRIDOR: ${COLLECT_CORRIDOR:-}
     depends_on:
       migrate:
         condition: service_completed_successfully
