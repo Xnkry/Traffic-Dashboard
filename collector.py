@@ -11,7 +11,10 @@ import time
 from city_catalog import catalog
 
 
-def collection_command(cities, max_points):
+def collection_command(cities, max_points, road_city=None, avenue=None, corridor=None):
+    if road_city:
+        command = [sys.executable, str(Path(__file__).with_name("road_ingest.py")), "collect", "--city", road_city, "--max-segments", str(max_points or 50)]
+        return command + (["--avenue", avenue] if avenue else []) + (["--corridor", corridor] if corridor else [])
     command = [sys.executable, str(Path(__file__).with_name("ingest.py")), "--max-points", str(max_points)]
     if cities:
         command.extend(["--cities", *cities])
@@ -24,10 +27,17 @@ def main(argv=None):
     parser.add_argument("--max-points", type=int, default=int(os.getenv("COLLECT_MAX_POINTS", "0")))
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--once", action="store_true")
+    parser.add_argument("--corridor", default=os.getenv("COLLECT_CORRIDOR"), help="Limit road mode to a connected corridor ID")
+    parser.add_argument("--avenue", default=os.getenv("COLLECT_AVENUE"), help="Limit road mode to an exact avenue name")
+    parser.add_argument("--road-city", default=os.getenv("COLLECT_ROAD_CITY"), help="Collect avenue flow and incidents for one imported city")
     parser.add_argument("--cities", nargs="+", default=[x.strip() for x in os.getenv("COLLECT_CITIES", "").split(",") if x.strip()])
     args = parser.parse_args(argv)
     if args.interval < 60 or args.max_points < 0 or args.timeout < 1:
         parser.error("Use interval >= 60 seconds, max-points >= 0, and timeout >= 1 second")
+    if (args.avenue or args.corridor) and not args.road_city:
+        parser.error("--avenue requires --road-city")
+    if args.road_city and args.road_city not in set(catalog().city):
+        parser.error("Unknown road city")
     if not set(args.cities).issubset(set(catalog().city)):
         parser.error("COLLECT_CITIES contains an unknown city")
     if not os.getenv("TOMTOM_API_KEY"):
@@ -41,7 +51,9 @@ def main(argv=None):
         points = points[points.city.isin(args.cities)]
     count = min(len(points), args.max_points) if args.max_points else len(points)
     logging.info("Collecting %s points every %ss; approximately %.0f requests/day before retries", count, args.interval, count * 86400 / args.interval)
-    command = collection_command(args.cities, args.max_points)
+    if args.road_city:
+        logging.info("Avenue mode: %s, at most %s road samples plus one incident request per batch", args.road_city, args.max_points or 50)
+    command = collection_command(args.cities, args.max_points, args.road_city, args.avenue, args.corridor)
     while not stop.is_set():
         started = time.monotonic()
         result = 1
