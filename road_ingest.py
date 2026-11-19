@@ -178,7 +178,13 @@ def collect_city(engine, city, limit, key, avenue=None, corridor=None):
             raise ValueError("No active samples match this city/avenue")
     failed = 0
     with api_session() as session:
-        success, incidents = fetch_incidents(session, key, area["bbox"])
+        from motorway import STUDY, corridor_incidents
+        if city == STUDY:
+            with engine.connect() as conn:
+                network = conn.execute(select(segments).where(segments.c.city == city, segments.c.active.is_(True))).mappings().all()
+            success, incidents = corridor_incidents(session, key, network)
+        else:
+            success, incidents = fetch_incidents(session, key, area["bbox"])
         with engine.begin() as conn:
             conn.execute(polls.insert().values(city=city, observed_at=datetime.now(timezone.utc), success=success, bbox=area["bbox"], payload=incidents))
         for road in roads:
@@ -225,7 +231,8 @@ def main(argv=None):
         parser.error("Choose only one of --radius-km, --area-id, or --network-file")
     if args.area_id is not None and args.area_id <= 0:
         parser.error("Area ID must be positive")
-    if args.action != "init" and args.city not in set(catalog().city):
+    from motorway import STUDY, import_motorway
+    if args.action != "init" and args.city not in set(catalog().city) | {STUDY}:
         parser.error("Specify a city from the catalog")
     key = os.getenv("TOMTOM_API_KEY")
     if args.action == "collect" and not key:
@@ -243,7 +250,13 @@ def main(argv=None):
                 if args.action == "init":
                     return 0
                 if args.action == "import":
-                    import_city(engine, args.city, args.radius_km, args.area_id, args.network_file)
+                    if args.city == STUDY:
+                        if args.radius_km is not None or args.area_id is not None:
+                            raise ValueError("Motorway study uses its fixed corridor bounds")
+                        count = import_motorway(engine, args.network_file)
+                        logger.info("Imported %s motorway samples", count)
+                    else:
+                        import_city(engine, args.city, args.radius_km, args.area_id, args.network_file)
                     return 0
                 return collect_city(engine, args.city, args.max_segments, key, args.avenue, args.corridor)
             finally:
